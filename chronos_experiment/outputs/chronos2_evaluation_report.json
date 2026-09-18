@@ -1,0 +1,14 @@
+{
+  "model": "amazon/chronos-2",
+  "prediction_length_days": 15,
+  "holdout_days": 15,
+  "point_forecast": "median (50th percentile) derived from default 21 quantiles",
+  "null_handling": "NaN quantity = unknown demand; kept as NaN in Chronos context (model masks via attention). Holdout evaluation excludes NaN actuals.",
+  "global_metrics": {
+    "total_skus": 100,
+    "total_observation_pairs": 1184,
+    "global_mae": 1.7516,
+    "global_wape": 0.4774,
+    "global_bias": -0.2377
+  }
+}

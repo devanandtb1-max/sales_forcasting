@@ -1,0 +1,67 @@
+{
+  "all": {
+    "records": 332295,
+    "products": 25344,
+    "earliestSellStart": "2024-07-31",
+    "latestSellEnd": "2027-04-06",
+    "sellStartYears": {
+      "2024": 42523,
+      "2025": 165237,
+      "2026": 123726
+    }
+  },
+  "supplier1": {
+    "records": 265518,
+    "products": 20624,
+    "earliestSellStart": "2024-07-31",
+    "latestSellEnd": "2027-02-23",
+    "sellStartYears": {
+      "2024": 33390,
+      "2025": 132606,
+      "2026": 99284
+    }
+  },
+  "selected100": {
+    "records": 3651,
+    "products": 88,
+    "earliestSellStart": "2024-10-02",
+    "latestSellEnd": "2027-02-23",
+    "sellStartYears": {
+      "2024": 434,
+      "2025": 1775,
+      "2026": 1434
+    }
+  },
+  "selected100OverlappingTraining": {
+    "records": 3601,
+    "products": 87,
+    "earliestSellStart": "2024-10-02",
+    "latestSellEnd": "2027-02-23",
+    "sellStartYears": {
+      "2024": 434,
+      "2025": 1775,
+      "2026": 1384
+    }
+  },
+  "missingSelectedProducts": [
+    "STR000025078",
+    "STR000051128",
+    "STR000001743",
+    "STR000002946",
+    "STR000025112",
+    "STR000025056",
+    "STR000025037",
+    "STR000085330",
+    "STR000025070",
+    "STR000009285",
+    "STR000007646",
+    "STR000025338",
+    "STR000051710"
+  ],
+  "notes": [
+    "Dates summarized in Australia/Melbourne. Raw timestamp fields preserved.",
+    "Presence of expired records does not establish complete historical coverage.",
+    "Active flags do not by themselves establish that a promotion was effective on a historical date.",
+    "Cost and customer selling promotion periods must be treated separately."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "holdout_start": "2026-06-08",
+  "holdout_end": "2026-09-07",
+  "n_rows": 1044,
+  "baseline_wmape": 0.2692387353975317,
+  "hybrid_wmape": 0.2604482680419081,
+  "improvement_abs": 0.008790467355623555,
+  "is_hybrid_better": true
+}

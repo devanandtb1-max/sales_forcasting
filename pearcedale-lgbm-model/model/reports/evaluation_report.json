@@ -1,0 +1,76 @@
+[
+  {
+    "group": "units",
+    "skipped": false,
+    "objective": "poisson",
+    "n_skus": 99,
+    "rows": {
+      "train": 8125,
+      "val": 539,
+      "holdout": 1044
+    },
+    "splits": {
+      "val_start": "2026-04-06",
+      "train_end_gap_start": "2026-06-01",
+      "holdout_start": "2026-06-08",
+      "gap_weeks": 1
+    },
+    "best_iteration": 169,
+    "wmape_holdout": 0.28397462273898566,
+    "wmape_holdout_by_tier": {
+      "UNKNOWN": 0.28397462273898566
+    },
+    "feature_importance_top10": [
+      [
+        "itemCode",
+        844
+      ],
+      [
+        "lag_2",
+        393
+      ],
+      [
+        "price_ratio",
+        284
+      ],
+      [
+        "lag_1",
+        251
+      ],
+      [
+        "lag_52",
+        251
+      ],
+      [
+        "promo_days_in_week",
+        251
+      ],
+      [
+        "lag_4",
+        250
+      ],
+      [
+        "lag_8",
+        240
+      ],
+      [
+        "promo_discount_pct_mean",
+        229
+      ],
+      [
+        "prev_asp_mean",
+        213
+      ]
+    ]
+  },
+  {
+    "group": "weight",
+    "skipped": true,
+    "reason": "empty dataset",
+    "rows": {
+      "train": 0,
+      "val": 0,
+      "holdout": 0
+    }
+  }
+]

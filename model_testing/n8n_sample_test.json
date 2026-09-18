@@ -1,0 +1,63 @@
+{
+  "name": "Pearcedale - Manual Model Sample Test",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-start",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [{ json: { api_url: 'https://YOUR-MODEL-API-HOST/test-forecast', as_of_date: '2026-09-16' } }];"
+      },
+      "id": "settings",
+      "name": "Test Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.api_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ as_of_date: $json.as_of_date }) }}",
+        "options": {
+          "timeout": 110000,
+          "response": { "response": { "responseFormat": "json" } }
+        }
+      },
+      "id": "run-model",
+      "name": "Run Sample Forecast",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nconst settings = $('Test Settings').first().json;\nif (r.status !== 'passed' || r.test_type !== 'pipeline_smoke_test') throw new Error('Unexpected test response');\nif (r.summary?.run_date !== settings.as_of_date) throw new Error('Wrong test date');\nif (!Array.isArray(r.forecasts) || !r.forecasts.length || r.forecasts.length !== r.summary.total_skus) throw new Error('Missing forecasts');\nif (new Set(r.forecasts.map(x => x.itemCode)).size !== r.forecasts.length) throw new Error('Duplicate products');\nfor (const row of r.forecasts) {\n  if (typeof row.hybrid_forecast_15d !== 'number' || !Number.isFinite(row.hybrid_forecast_15d) || row.hybrid_forecast_15d < 0) throw new Error('Invalid demand');\n}\nreturn [{ json: { status: r.status, run_id: r.run_id, test_type: r.test_type, inventory_is_simulated: r.inventory_is_simulated, ...r.summary, total_forecast_quantity: r.forecasts.reduce((sum, row) => sum + row.hybrid_forecast_15d, 0), warnings: r.warnings, sample_forecasts: r.forecasts.slice(0, 5), sample_recommendations: r.recommendations.slice(0, 5) } }];"
+      },
+      "id": "summary",
+      "name": "Validate and Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Test Settings", "type": "main", "index": 0 }]] },
+    "Test Settings": { "main": [[{ "node": "Run Sample Forecast", "type": "main", "index": 0 }]] },
+    "Run Sample Forecast": { "main": [[{ "node": "Validate and Summarize", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "pinData": {}
+}

@@ -1,0 +1,83 @@
+{
+  "name": "Pearcedale - Receive Local Model Test",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pearcedale-model-results-test",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "receive-results",
+      "name": "Receive Model Results",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "5cda3aac-33e4-45d3-b7ad-2a9217093ae8"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Used inside the n8n Code node; only the webhook body enters the result.\nconst r = $input.first().json.body;\nconst errors = [];\nconst check = (ok, message) => { if (!ok) errors.push(message); };\nconst validQty = x => typeof x === 'number' && Number.isFinite(x) && x >= 0;\ncheck(r?.status === 'passed' && r?.test_type === 'pipeline_smoke_test', 'Unexpected payload type');\ncheck(typeof r?.run_id === 'string' && /^[a-f0-9]{32}$/.test(r.run_id), 'Invalid run ID');\ncheck(r?.inventory_is_simulated === true, 'This workflow expects simulated inventory');\nconst forecasts = Array.isArray(r?.forecasts) ? r.forecasts : [];\nconst recommendations = Array.isArray(r?.recommendations) ? r.recommendations : [];\nconst summary = r?.summary || {};\ncheck(forecasts.length > 0 && forecasts.length === summary.total_skus, 'Missing or inconsistent product count');\nconst ids = new Set(forecasts.map(x => x?.itemCode));\ncheck(ids.size === forecasts.length, 'Duplicate forecast products');\nconst rawDate = summary.run_date;\nconst origin = new Date(`${rawDate}T00:00:00Z`);\nconst validDate = typeof rawDate === 'string' && /^\\d{4}-\\d{2}-\\d{2}$/.test(rawDate)\n  && Number.isFinite(origin.getTime()) && origin.toISOString().slice(0, 10) === rawDate;\ncheck(validDate, 'Invalid as-of date');\nlet start, end;\nif (validDate) {\n  start = new Date(origin.getTime() + 86400000).toISOString().slice(0, 10);\n  end = new Date(origin.getTime() + 15 * 86400000).toISOString().slice(0, 10);\n  check(summary.horizon?.start === start && summary.horizon?.end === end, 'Wrong summary horizon');\n}\nfor (const row of forecasts) {\n  check(typeof row?.itemCode === 'string' && row.itemCode.length > 0, 'Missing itemCode');\n  check(validQty(row?.baseline_forecast_15d) && validQty(row?.hybrid_forecast_15d), 'Invalid forecast quantity');\n  check(validDate && row?.horizon_start === start && row?.horizon_end === end && row?.as_of_date === rawDate, 'Wrong forecast dates');\n}\ncheck(recommendations.length === forecasts.length\n  && new Set(recommendations.map(x => x?.itemCode)).size === forecasts.length, 'Wrong recommendation coverage');\nfor (const row of recommendations) {\n  check(ids.has(row?.itemCode), 'Unexpected recommendation product');\n  check(Number.isInteger(row?.recommended_order_qty) && row.recommended_order_qty >= 0, 'Invalid order quantity');\n}\nif (errors.length) return [{json: {status: 'failed', errors: [...new Set(errors)]}}];\nreturn [{json: {\n  status: 'passed', run_id: r.run_id, test_type: r.test_type,\n  inventory_is_simulated: true, run_date: rawDate, horizon: summary.horizon,\n  total_skus: forecasts.length, skus_with_active_promotion: summary.skus_with_active_promotion,\n  po_decisions: summary.po_decisions, critical_stockout_risk_skus: summary.critical_stockout_risk_skus,\n  total_forecast_quantity: forecasts.reduce((sum, row) => sum + row.hybrid_forecast_15d, 0),\n  warnings: r.warnings, sample_forecasts: forecasts.slice(0, 5),\n  sample_recommendations: recommendations.slice(0, 5)\n}}];\n"
+      },
+      "id": "validate-results",
+      "name": "Validate and Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.status === 'passed' ? 200 : 422 }}"
+        }
+      },
+      "id": "respond",
+      "name": "Return Test Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        520,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Receive Model Results": {
+      "main": [
+        [
+          {
+            "node": "Validate and Summarize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Summarize": {
+      "main": [
+        [
+          {
+            "node": "Return Test Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {}
+}

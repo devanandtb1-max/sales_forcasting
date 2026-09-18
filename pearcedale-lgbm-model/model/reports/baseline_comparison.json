@@ -1,0 +1,22 @@
+{
+  "note": "Naive baselines computed on the identical holdout window and identical (lag_1, roll_mean_4) features the LightGBM model was evaluated on, so this is an apples-to-apples comparison.",
+  "units": {
+    "n_holdout_rows": 829,
+    "naive_last_week_wmape": 0.349,
+    "moving_avg_4week_wmape": 0.2788,
+    "lightgbm_wmape": 0.24371,
+    "lightgbm_beats_both_baselines": true,
+    "by_tier": {
+      "A": {"naive_last_week": 0.2794, "moving_avg_4week": 0.2460, "lightgbm": 0.20789},
+      "B": {"naive_last_week": 0.4435, "moving_avg_4week": 0.3233, "lightgbm": 0.29237}
+    }
+  },
+  "weight": {
+    "n_holdout_rows": 93,
+    "naive_last_week_wmape": 0.152,
+    "moving_avg_4week_wmape": 0.1257,
+    "lightgbm_wmape": 0.13284,
+    "lightgbm_beats_both_baselines": false,
+    "verdict": "LightGBM beats naive last-week but loses to the plain 4-week moving average. Only 7 SKUs / ~800 training rows - not enough for a tree model to reliably outlearn a simple average here. Treat the weight-SKU model as provisional; the 4-week moving average is the safer default for those 7 SKUs until more weight-priced SKUs are onboarded."
+  }
+}

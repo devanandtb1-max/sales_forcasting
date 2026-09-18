@@ -1,0 +1,21 @@
+{
+  "run_date": "2026-09-16",
+  "horizon": {
+    "start": "2026-09-17",
+    "end": "2026-10-01"
+  },
+  "total_skus": 99,
+  "skus_with_active_promotion": 83,
+  "po_decisions": {
+    "CREATE_PO": 27,
+    "REVIEW_REQUIRED": 21,
+    "NO_PO_REQUIRED": 51
+  },
+  "critical_stockout_risk_skus": 26,
+  "outputs": {
+    "baseline": "..\\outputs\\baseline_predictions_15day.csv",
+    "promotion_effects": "..\\outputs\\promotion_effects.csv",
+    "hybrid_forecast": "..\\outputs\\hybrid_predictions_15day.csv",
+    "po_recommendations": "..\\outputs\\po_recommendations.csv"
+  }
+}
