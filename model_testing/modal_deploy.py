@@ -58,9 +58,84 @@ image = (
         str(MODEL_DIR / "model" / "run_forecasting.py"),
         "/app/model/run_forecasting.py",
     )
+    .add_local_file(
+        str(MODEL_DIR / "model" / "preprocess_features.py"),
+        "/app/model/preprocess_features.py",
+    )
 )
 
 app = modal.App(name="pearcedale-forecast", image=image)
+
+
+# ── LOCAL_DATASET feature building ──────────────────────────────────────────────
+_REQUIRED_SALES_FIELDS = {
+    "itemCode", "trading_date", "quantity", "returns_qty", "asp", "unit_margin",
+    "uom_class", "tier", "departmentName", "commodityName", "primarySupplier",
+    "cartonQty", "minOrderQty",
+}
+_REQUIRED_PROMO_FIELDS = {
+    "itemCode", "trading_date", "regular_price", "promo_active", "promo_price",
+    "discount_pct", "promo_type_group", "n_stacked_promos",
+}
+
+
+def _build_features_from_model_input(model_input):
+    """Turn n8n's LOCAL_DATASET model_input (raw daily sales + promotion rows)
+    into the same (features_df, promo_daily_df) shape run_forecasting.py expects
+    from the bundled files - by calling preprocess_features.py's existing,
+    unmodified feature-engineering functions on the caller's data instead of
+    reading weekly_features.parquet/promotions_daily.parquet from disk.
+
+    Raises ValueError on anything missing/malformed. Never invents data and
+    never falls back to the bundled dataset.
+    """
+    import polars as pl
+    import preprocess_features as feat
+
+    if not isinstance(model_input, dict):
+        raise ValueError("model_input must be an object with 'sales' and 'promotions' arrays")
+
+    sales_rows = model_input.get("sales")
+    promo_rows = model_input.get("promotions")
+    if not isinstance(sales_rows, list) or not sales_rows:
+        raise ValueError("model_input.sales must be a non-empty list of daily sales records")
+    if not isinstance(promo_rows, list):
+        raise ValueError("model_input.promotions must be a list of daily promotion records")
+
+    missing = _REQUIRED_SALES_FIELDS - set(sales_rows[0].keys())
+    if missing:
+        raise ValueError(f"model_input.sales rows are missing required fields: {sorted(missing)}")
+    if promo_rows:
+        missing = _REQUIRED_PROMO_FIELDS - set(promo_rows[0].keys())
+        if missing:
+            raise ValueError(f"model_input.promotions rows are missing required fields: {sorted(missing)}")
+
+    try:
+        sales_df = pl.DataFrame(sales_rows, infer_schema_length=None).with_columns(
+            pl.col("trading_date").str.to_date().alias("_date")
+        )
+    except Exception as exc:
+        raise ValueError(f"Could not parse model_input.sales: {exc}") from exc
+
+    # Reuse the exact functions preprocess_features.py uses for the bundled
+    # dataset - same aggregation, same lag/rolling math, same null handling.
+    weekly = feat.aggregate_weekly(sales_df)
+    weekly = feat.add_calendar_features(weekly)
+    weekly = feat.add_lag_and_rolling_features(weekly)
+
+    promo_df = None
+    if promo_rows:
+        try:
+            promo_df = pl.DataFrame(promo_rows, infer_schema_length=None).with_columns(
+                pl.col("trading_date").str.to_date()
+            )
+        except Exception as exc:
+            raise ValueError(f"Could not parse model_input.promotions: {exc}") from exc
+        promo_weekly = feat.build_promo_weekly(promo_df)
+        weekly = feat.add_promo_features(weekly, promo_weekly)
+
+    weekly = feat.add_vic_calendar_flags(weekly)
+    return weekly, promo_df
 
 
 # ── Endpoint ───────────────────────────────────────────────────────────────────
@@ -77,7 +152,13 @@ def forecast(request_body: dict):
     """Run the LightGBM forecasting pipeline and return structured results.
 
     Expected JSON body:
-        {"as_of_date": "YYYY-MM-DD"}
+        {"as_of_date": "YYYY-MM-DD", "token": "...", "data_source": "SAMPLE"}
+        {"as_of_date": "YYYY-MM-DD", "token": "...", "data_source": "LOCAL_DATASET",
+         "model_input": {"sales": [...], "promotions": [...]}}
+
+    data_source defaults to "SAMPLE" when omitted, for backward compatibility.
+    SAMPLE uses the bundled parquet data exactly as before. LOCAL_DATASET
+    requires model_input and never falls back to the bundled data.
 
     Returns the same payload format as api.run_sample():
         forecasts[], recommendations[], summary{}, warnings[]
@@ -105,8 +186,11 @@ def forecast(request_body: dict):
     except (ValueError, TypeError):
         return {"status": "error", "error": f"Invalid as_of_date: {raw_date!r}. Use YYYY-MM-DD."}
 
-    # ── Run the model ──────────────────────────────────────────────────────
-    # Change to the model directory so relative paths in run_forecasting.py
+    data_source = request_body.get("data_source", "SAMPLE")
+    if data_source not in ("SAMPLE", "LOCAL_DATASET"):
+        return {"status": "error", "error": f"Unsupported data_source: {data_source!r}. Use SAMPLE or LOCAL_DATASET."}
+
+    # ── Change to the model directory so relative paths in run_forecasting.py
     # resolve correctly (features/, artifacts/, ../data/, ../processed_output/).
     os.chdir("/app/model")
     sys.path.insert(0, "/app/model")
@@ -118,13 +202,23 @@ def forecast(request_body: dict):
     # Import the model (now that sys.path and cwd are set).
     import run_forecasting as model
 
+    # ── LOCAL_DATASET: build features from the caller's data only ───────────
+    # Never falls back to the bundled dataset; missing/invalid input is an error.
+    features_df = None
+    promo_daily_df = None
+    if data_source == "LOCAL_DATASET":
+        try:
+            features_df, promo_daily_df = _build_features_from_model_input(request_body.get("model_input"))
+        except ValueError as exc:
+            return {"status": "error", "error": f"Invalid model_input: {exc}"}
+
     run_id = uuid.uuid4().hex
     output_dir = Path(f"/tmp/runs/{run_id}")
     model.OUTPUT_DIR = output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        model.main(as_of)
+        model.main(as_of, features_df=features_df, promo_daily_df=promo_daily_df)
     except Exception as exc:
         return {
             "status": "error",

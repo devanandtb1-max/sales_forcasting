@@ -67,7 +67,7 @@ def iso_week_monday(d: date) -> date:
     return d - timedelta(days=d.isoweekday() - 1)
 
 
-def build_future_promo_weekly() -> pl.DataFrame:
+def build_future_promo_weekly(promo_daily_df: pl.DataFrame | None = None) -> pl.DataFrame:
     """Same weekly promo aggregation as preprocess_features.py's
     build_promo_weekly()/add_promo_features(), applied to
     promotions_daily.parquet - which now covers known future promotions too
@@ -75,8 +75,11 @@ def build_future_promo_weekly() -> pl.DataFrame:
     end date, not just historical sales dates). This lets the two ISO weeks
     covering the forecast horizon get their *own* real promo features
     instead of reusing whatever was true last week.
+
+    `promo_daily_df`, when supplied (LOCAL_DATASET inference), is used
+    instead of reading PROMO_DAILY_PATH from disk (SAMPLE/bundled data).
     """
-    daily = pl.read_parquet(PROMO_DAILY_PATH)
+    daily = promo_daily_df if promo_daily_df is not None else pl.read_parquet(PROMO_DAILY_PATH)
     daily = daily.with_columns(pl.col("trading_date").dt.strftime("%G-%V").alias("iso_week"))
     effective_price = pl.when(pl.col("promo_active")).then(pl.col("promo_price")).otherwise(pl.col("regular_price"))
 
@@ -153,7 +156,11 @@ def calendar_features_for_week(week_start: date) -> dict:
     }
 
 
-def build_baseline_15day(as_of: date) -> pl.DataFrame:
+def build_baseline_15day(
+    as_of: date,
+    features_df: pl.DataFrame | None = None,
+    promo_daily_df: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Predict the two ISO weeks covering the 15-day horizon and sum them.
 
     Lag/rolling sales features (and SKU metadata) come from the most recent
@@ -163,8 +170,14 @@ def build_baseline_15day(as_of: date) -> pl.DataFrame:
     in advance, so each target week gets its own real values computed for
     its own dates from promotions_daily.parquet and the vic_*.csv reference
     data, rather than reusing last week's - see experiments.md.
+
+    `features_df`/`promo_daily_df`, when supplied (LOCAL_DATASET inference),
+    are used instead of reading FEATURES_PATH/PROMO_DAILY_PATH from disk
+    (SAMPLE/bundled data). Both must already be in the same shape produced
+    by preprocess_features.py.
     """
-    df = pl.read_parquet(FEATURES_PATH).filter(pl.col("is_complete_week"))
+    source = features_df if features_df is not None else pl.read_parquet(FEATURES_PATH)
+    df = source.filter(pl.col("is_complete_week"))
     # Only use data available as of the as_of date
     df = df.filter(pl.col("week_start") <= as_of)
     # Take the most recent feature row per SKU
@@ -175,7 +188,10 @@ def build_baseline_15day(as_of: date) -> pl.DataFrame:
     week1_start = iso_week_monday(horizon_start)
     week2_start = week1_start + timedelta(days=7)
 
-    future_promo = build_future_promo_weekly() if PROMO_DAILY_PATH.exists() else None
+    if promo_daily_df is not None:
+        future_promo = build_future_promo_weekly(promo_daily_df)
+    else:
+        future_promo = build_future_promo_weekly() if PROMO_DAILY_PATH.exists() else None
 
     model = lgb.Booster(model_file=str(MODEL_UNITS))
     week_preds = []
@@ -209,14 +225,21 @@ def build_baseline_15day(as_of: date) -> pl.DataFrame:
 
 
 # ── Step 2: Promotion Uplift ───────────────────────────────────────────────────
-def apply_promotion_uplift(baseline: pl.DataFrame, as_of: date) -> pl.DataFrame:
+def apply_promotion_uplift(
+    baseline: pl.DataFrame,
+    as_of: date,
+    promo_daily_df: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Merge future promotions from the daily table and apply hybrid uplift.
 
     Reads ``promotions_daily.parquet`` (produced by ``ingest_promotions.py``),
     filters to promo-active days within the 15-day horizon, aggregates per
     SKU, and predicts uplift using the retrained promotion model.
+
+    `promo_daily_df`, when supplied (LOCAL_DATASET inference), is used
+    instead of reading PROMO_DAILY_PATH from disk (SAMPLE/bundled data).
     """
-    if not PROMO_DAILY_PATH.exists():
+    if promo_daily_df is None and not PROMO_DAILY_PATH.exists():
         print("  [warn] promotions_daily.parquet not found — returning baseline unchanged.")
         return baseline.with_columns(
             pl.lit(False).alias("promotion_active"),
@@ -227,7 +250,7 @@ def apply_promotion_uplift(baseline: pl.DataFrame, as_of: date) -> pl.DataFrame:
             pl.col("baseline_forecast_15d").alias("hybrid_forecast_15d"),
         )
 
-    daily = pl.read_parquet(PROMO_DAILY_PATH)
+    daily = promo_daily_df if promo_daily_df is not None else pl.read_parquet(PROMO_DAILY_PATH)
 
     horizon_start = as_of + timedelta(days=1)
     horizon_end   = as_of + timedelta(days=15)
@@ -373,7 +396,15 @@ def calculate_po(forecast: pl.DataFrame) -> pl.DataFrame:
 
 
 # ── Main Orchestrator ──────────────────────────────────────────────────────────
-def main(as_of: date | None = None):
+def main(
+    as_of: date | None = None,
+    features_df: pl.DataFrame | None = None,
+    promo_daily_df: pl.DataFrame | None = None,
+):
+    """`features_df`/`promo_daily_df`, when supplied (LOCAL_DATASET inference),
+    are used instead of the bundled files (SAMPLE) - see build_baseline_15day()
+    and apply_promotion_uplift(). Passing them never reads the bundled dataset.
+    """
     if as_of is None:
         as_of = date.today()
 
@@ -386,14 +417,14 @@ def main(as_of: date | None = None):
 
     # Step 1: Baseline
     print("[1/4] Generating 15-day baseline forecast...")
-    baseline = build_baseline_15day(as_of)
+    baseline = build_baseline_15day(as_of, features_df=features_df, promo_daily_df=promo_daily_df)
     baseline.write_parquet(OUTPUT_DIR / "baseline_predictions_15day.parquet")
     baseline.write_csv(OUTPUT_DIR / "baseline_predictions_15day.csv")
     print(f"      {baseline.height} SKUs | baseline written.")
 
     # Step 2: Promotion Uplift
     print("[2/4] Applying promotion uplift...")
-    hybrid = apply_promotion_uplift(baseline, as_of)
+    hybrid = apply_promotion_uplift(baseline, as_of, promo_daily_df=promo_daily_df)
 
     promo_count = hybrid.filter(pl.col("promotion_active")).height
     print(f"      {promo_count}/{hybrid.height} SKUs have active promotions in this 15-day window.")

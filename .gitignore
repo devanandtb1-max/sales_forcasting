@@ -1,1 +1,3 @@
 DEPLOYMENT_SECRETS_AND_CONTEXT.md
+__pycache__/
+*.pyc

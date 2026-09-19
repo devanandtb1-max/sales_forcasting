@@ -105,7 +105,7 @@ def add_lag_and_rolling_features(weekly: pl.DataFrame) -> pl.DataFrame:
     return weekly
 
 
-def build_promo_weekly(path: Path = PROMO_DAILY) -> pl.DataFrame:
+def build_promo_weekly(path: Path | pl.DataFrame = PROMO_DAILY) -> pl.DataFrame:
     """Aggregate the daily promo table (model/ingest_promotions.py) to one row
     per (itemCode, iso_week). Promo-derived columns are left null for weeks
     where promo visibility is UNKNOWN (majority of days before Oct 2024, or
@@ -114,8 +114,11 @@ def build_promo_weekly(path: Path = PROMO_DAILY) -> pl.DataFrame:
     Future-week promo info is intentionally allowed here (promos are planned
     in advance); only the history-based lag/rolling sales features are
     restricted to t-1 and earlier.
+
+    `path` may also be an already-loaded DataFrame (e.g. daily promo rows
+    supplied at inference time by a caller instead of read from disk).
     """
-    daily = pl.read_parquet(path)
+    daily = pl.read_parquet(path) if isinstance(path, Path) else path
     daily = daily.with_columns(pl.col("trading_date").dt.strftime("%G-%V").alias("iso_week"))
 
     effective_price = pl.when(pl.col("promo_active")).then(pl.col("promo_price")).otherwise(pl.col("regular_price"))

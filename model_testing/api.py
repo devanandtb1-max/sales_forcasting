@@ -81,45 +81,62 @@ def run_sample(as_of):
     }
 
 
+HISTORY_LOOKBACK_DAYS = 400  # >52 weeks, enough for the model's lag_52/roll_*_13 features
+
+
 def local_dataset_snapshot(as_of):
-    """Read-only snapshot from this project's own historical dataset, standing in for a
-    live SmartRetail feed until that API exists. Never writes to the source parquet files.
-    For each SKU, returns the latest recorded row at or before `as_of` (no future leakage)."""
+    """Read-only daily history from this project's own historical dataset, standing in
+    for a live SmartRetail feed until that API exists. Never writes to the source
+    parquet files. Returns every daily row at or before `as_of` (no future leakage),
+    going back HISTORY_LOOKBACK_DAYS - the forecasting model needs a real daily time
+    series (lag_1..lag_52, rolling means/stds) per SKU, not a single latest snapshot."""
     import polars as pl
 
     if not CLEAN_SALES.exists() or not PROMO_DAILY.exists():
         raise RuntimeError('Local dataset files not found under pearcedale-lgbm-model/processed_output/')
 
     cutoff = as_of.isoformat()
+    window_start = (as_of - timedelta(days=HISTORY_LOOKBACK_DAYS)).isoformat()
+    # Sales must never look past as_of (unknowable in advance - no leakage).
+    # Promotions ARE known in advance (scheduled), so the model needs them for
+    # the forecast horizon too - same "future-extended" treatment as the
+    # bundled promotions_daily.parquet (see ingest_promotions.py).
+    horizon_end = (as_of + timedelta(days=15)).isoformat()
+
     sales = (
         pl.read_parquet(CLEAN_SALES)
-        .filter(pl.col('trading_date') <= cutoff)
-        .sort('trading_date', descending=True)
-        .unique(subset=['itemCode'], keep='first')
+        .filter((pl.col('trading_date') <= cutoff) & (pl.col('trading_date') >= window_start))
+        .sort(['itemCode', 'trading_date'])
     )
     promo = (
         pl.read_parquet(PROMO_DAILY)
         .with_columns(pl.col('trading_date').dt.strftime('%Y-%m-%d').alias('trading_date'))
-        .filter(pl.col('trading_date') <= cutoff)
-        .sort('trading_date', descending=True)
-        .unique(subset=['itemCode'], keep='first')
-        .rename({'trading_date': 'promo_trading_date'})
+        .filter((pl.col('trading_date') <= horizon_end) & (pl.col('trading_date') >= window_start))
+        .sort(['itemCode', 'trading_date'])
     )
-    records = sales.join(promo, on='itemCode', how='left').to_dicts()
-    for row in records:
-        latest = row.get('trading_date')
-        row['days_since_latest_record'] = (as_of - date.fromisoformat(latest)).days if latest else None
-        for key, value in list(row.items()):
-            if hasattr(value, 'isoformat'):
-                row[key] = value.isoformat()
+
+    def to_records(df):
+        rows = df.to_dicts()
+        for row in rows:
+            for key, value in list(row.items()):
+                if hasattr(value, 'isoformat'):
+                    row[key] = value.isoformat()
+        return rows
+
+    sales_rows = to_records(sales)
+    promo_rows = to_records(promo)
     return {
         'as_of_date': cutoff,
+        'window_start': window_start,
         'source_files': [
             'pearcedale-lgbm-model/processed_output/clean_daily_sales.parquet',
             'pearcedale-lgbm-model/processed_output/promotions_daily.parquet',
         ],
-        'sku_count': len(records),
-        'records': records,
+        'sku_count': sales.select('itemCode').n_unique(),
+        'sales_row_count': len(sales_rows),
+        'promotion_row_count': len(promo_rows),
+        'sales': sales_rows,
+        'promotions': promo_rows,
     }
 
 
