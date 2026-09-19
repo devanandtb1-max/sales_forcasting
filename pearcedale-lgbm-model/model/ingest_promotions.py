@@ -239,6 +239,20 @@ def build_daily_table() -> pl.DataFrame:
         pl.when(pl.col("promo_active")).then(pl.col("discount_pct")).otherwise(0.0).alias("discount_pct"),
     )
 
+    # ── DQ: exclude price-hike records (promo_price > regular_price) ──────
+    # These are invalid promotions where the "promotional" price exceeds the
+    # regular shelf price, producing negative discount_pct.  Mark them as
+    # non-promo days (promo_active=false) instead of allowing them to
+    # contaminate the model.  The original promo_price/discount_pct are
+    # nulled out so downstream code never sees a negative discount.
+    is_price_hike = pl.col("promo_active") & (pl.col("discount_pct") < 0)
+    out = out.with_columns(
+        pl.when(is_price_hike).then(False).otherwise(pl.col("promo_active")).alias("promo_active"),
+        pl.when(is_price_hike).then(None).otherwise(pl.col("promo_price")).alias("promo_price"),
+        pl.when(is_price_hike).then(0.0).otherwise(pl.col("discount_pct")).alias("discount_pct"),
+        pl.when(is_price_hike).then(None).otherwise(pl.col("promo_type_group")).alias("promo_type_group"),
+    )
+
     out = add_promo_distance_features(out, promo)
     out = add_promo_status(out, raw)
 
@@ -255,7 +269,27 @@ def main() -> None:
     out.write_parquet(OUTPUT)
     print(f"Wrote {out.height} rows ({out['itemCode'].n_unique()} SKUs) to {OUTPUT}")
     print(out.group_by("promo_status").len())
-    print(f"Promo-active days: {out.filter(pl.col('promo_active')).height}")
+
+    promo_active_count = out.filter(pl.col("promo_active")).height
+    print(f"Promo-active days: {promo_active_count}")
+
+    # ── DQ report: price-hike records that were excluded ──────────────────
+    neg_discount = out.filter(
+        (pl.col("discount_pct") == 0.0)
+        & pl.col("promo_price").is_null()
+        & pl.col("regular_price").is_not_null()
+    )
+    # A more precise check: re-read promo_daily data to count excluded rows
+    # Instead, just check for days that had promo data but were zeroed out
+    print(f"\n── DQ: Price-hike exclusion report ──")
+    print(f"  Negative discount_pct rows remaining: "
+          f"{out.filter(pl.col('discount_pct') < 0).height}")
+    print(f"  Promo-active rows with discount_pct == 0: "
+          f"{out.filter(pl.col('promo_active') & (pl.col('discount_pct') == 0.0)).height}")
+    if out.filter(pl.col("discount_pct") < 0).height > 0:
+        print("  WARNING: Negative discount_pct values still present!")
+    else:
+        print("  OK: No negative discount_pct values in output.")
 
 
 if __name__ == "__main__":

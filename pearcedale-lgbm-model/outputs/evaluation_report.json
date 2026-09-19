@@ -5,11 +5,11 @@
     "end": "2026-10-01"
   },
   "total_skus": 99,
-  "skus_with_active_promotion": 83,
+  "skus_with_active_promotion": 45,
   "po_decisions": {
-    "CREATE_PO": 27,
-    "REVIEW_REQUIRED": 21,
-    "NO_PO_REQUIRED": 51
+    "CREATE_PO": 26,
+    "REVIEW_REQUIRED": 27,
+    "NO_PO_REQUIRED": 46
   },
   "critical_stockout_risk_skus": 26,
   "outputs": {

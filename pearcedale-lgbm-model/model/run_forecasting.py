@@ -4,7 +4,7 @@ Workflow:
   1. Load trained LightGBM baseline model
   2. Load trained promotion-effect model
   3. Build 15-day baseline forecast for all SKUs (two ISO weeks covering today+15)
-  4. Merge known future promotions from processed_output/promotions.parquet
+  4. Merge known future promotions from processed_output/promotions_daily.parquet
   5. Apply hybrid uplift where a confirmed future promotion overlaps the horizon
   6. Feed hybrid demand into the existing PO logic (stockout, MOQ, carton rounding)
   7. Write all outputs to outputs/
@@ -27,7 +27,6 @@ import polars as pl
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 FEATURES_PATH    = Path("features/weekly_features.parquet")
-PROMOTIONS_PATH  = Path("../processed_output/promotions.parquet")
 PROMO_DAILY_PATH = Path("../processed_output/promotions_daily.parquet")
 HOLIDAYS_CSV     = Path("../data/vic_public_holidays.csv")
 SCHOOL_TERMS_CSV = Path("../data/vic_school_terms.csv")
@@ -211,52 +210,60 @@ def build_baseline_15day(as_of: date) -> pl.DataFrame:
 
 # ── Step 2: Promotion Uplift ───────────────────────────────────────────────────
 def apply_promotion_uplift(baseline: pl.DataFrame, as_of: date) -> pl.DataFrame:
-    """Merge future promotions and apply hybrid uplift."""
-    if not PROMOTIONS_PATH.exists():
-        print("  [warn] promotions.parquet not found — returning baseline unchanged.")
+    """Merge future promotions from the daily table and apply hybrid uplift.
+
+    Reads ``promotions_daily.parquet`` (produced by ``ingest_promotions.py``),
+    filters to promo-active days within the 15-day horizon, aggregates per
+    SKU, and predicts uplift using the retrained promotion model.
+    """
+    if not PROMO_DAILY_PATH.exists():
+        print("  [warn] promotions_daily.parquet not found — returning baseline unchanged.")
         return baseline.with_columns(
             pl.lit(False).alias("promotion_active"),
-            pl.lit("NONE").alias("promotion_type"),
+            pl.lit("NONE").alias("promo_type"),
             pl.lit(0.0).alias("discount_pct"),
             pl.lit(0).cast(pl.Int64).alias("promo_days_in_horizon"),
             pl.lit(0.0).alias("predicted_uplift"),
             pl.col("baseline_forecast_15d").alias("hybrid_forecast_15d"),
         )
 
-    promos = pl.read_parquet(PROMOTIONS_PATH)
+    daily = pl.read_parquet(PROMO_DAILY_PATH)
 
     horizon_start = as_of + timedelta(days=1)
     horizon_end   = as_of + timedelta(days=15)
 
-    # Filter to promos that overlap the 15-day horizon
-    active = promos.filter(
-        (pl.col("promo_start") <= horizon_end) & (pl.col("promo_end") >= horizon_start)
+    # Filter to promo-active days within the 15-day horizon
+    horizon_promos = daily.filter(
+        pl.col("promo_active")
+        & (pl.col("trading_date") >= horizon_start)
+        & (pl.col("trading_date") <= horizon_end)
     )
 
-    # Calculate overlap days within the horizon
-    active = active.with_columns(
-        (
-            pl.min_horizontal(pl.col("promo_end"), pl.lit(horizon_end))
-            - pl.max_horizontal(pl.col("promo_start"), pl.lit(horizon_start))
-        ).dt.total_days().add(1).clip(lower_bound=0).alias("promo_days_in_horizon")
-    )
-
-    # Pick the strongest promotion per SKU (highest discount or most overlap days)
-    active = active.sort(["itemCode", "promo_days_in_horizon", "discount_pct"],
-                          descending=[False, True, True])
-    best_promo = active.group_by("itemCode").first().select(
-        ["itemCode", "promo_type", "discount_pct", "promo_days_in_horizon"]
+    # Aggregate per SKU: count promo days, max discount, dominant type
+    best_promo = horizon_promos.group_by("itemCode").agg(
+        pl.len().alias("promo_days_in_horizon"),
+        pl.col("discount_pct").max().alias("discount_pct"),
+        pl.col("promo_type_group").mode().first().alias("promo_type_group"),
     ).with_columns(
-        pl.col("discount_pct").fill_null(0.0),
-        pl.col("promo_type").fill_null("NONE"),
+        pl.col("promo_type_group").fill_null("NONE"),
     )
 
     # Join onto baseline
     merged = baseline.join(best_promo, on="itemCode", how="left").with_columns(
-        pl.col("promo_type").fill_null("NONE"),
-        pl.col("discount_pct").fill_null(0.0),
+        pl.col("promo_type_group").fill_null("NONE"),
         pl.col("promo_days_in_horizon").fill_null(0).cast(pl.Int64),
     )
+    
+    # Non-promotions get 0.0, but active promotions keep their null discount_pct (as NaN so float() doesn't crash)
+    merged = merged.with_columns(
+        pl.when(pl.col("promo_days_in_horizon") == 0)
+          .then(0.0)
+          .otherwise(pl.col("discount_pct").fill_null(float('nan')))
+          .alias("discount_pct")
+    )
+
+    # Rename promo_type_group → promo_type for output column compatibility
+    merged = merged.rename({"promo_type_group": "promo_type"})
 
     # Predict uplift using promotion model
     promo_model_available = MODEL_PROMO.exists()
@@ -264,7 +271,10 @@ def apply_promotion_uplift(baseline: pl.DataFrame, as_of: date) -> pl.DataFrame:
         promo_model = lgb.Booster(model_file=str(MODEL_PROMO))
         pdf = merged.select(["discount_pct", "promo_days_in_horizon", "promo_type"]).to_pandas()
         pdf["promo_type"] = pdf["promo_type"].astype("category")
-        pdf = pdf.rename(columns={"promo_days_in_horizon": "overlap_days"})
+        pdf = pdf.rename(columns={
+            "promo_days_in_horizon": "overlap_days",
+            "promo_type": "promo_type_group",
+        })
         raw_uplift = promo_model.predict(pdf)
     else:
         raw_uplift = np.zeros(merged.height)
@@ -280,6 +290,11 @@ def apply_promotion_uplift(baseline: pl.DataFrame, as_of: date) -> pl.DataFrame:
         pl.when(pl.col("promo_days_in_horizon") > 0)
             .then(pl.col("raw_uplift").clip(-0.5, MAX_UPLIFT))
             .otherwise(pl.lit(0.0)).alias("predicted_uplift"),
+    )
+    
+    # DQ flag for active promotions with missing discount
+    merged = merged.with_columns(
+        (pl.col("promotion_active") & pl.col("discount_pct").is_nan()).alias("review_dq_flag")
     )
 
     # Promo-day fraction of the 15-day horizon (scale uplift proportionally)

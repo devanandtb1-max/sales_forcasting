@@ -1,0 +1,605 @@
+{
+  "name": "Pearcedale PO Project - Master Test Orchestrator",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "po-manual",
+      "name": "Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Run Configuration - the single place to control this workflow run.\n// Edit the values below (or replace this Code node with a Set node) - no other\n// node in this workflow should need editing to change these.\nconst config = {\n  as_of_date: '',              // '' = use today (Australia/Melbourne); or 'YYYY-MM-DD' to pin a date\n  store: 'Pearcedale',\n  data_source: 'SAMPLE',       // SAMPLE | LOCAL_DATASET | SMARTRETAIL\n  expected_sku_count: 99,\n  // Only used when data_source = 'LOCAL_DATASET': the cloudflared tunnel URL\n  // currently pointing at `python model_testing/api.py`'s /local-dataset endpoint.\n  local_dataset_api_url: 'https://REPLACE-WITH-YOUR-TUNNEL-URL/local-dataset'\n};\n\nconst parts = new Intl.DateTimeFormat('en-US', {timeZone:'Australia/Melbourne', year:'numeric', month:'2-digit', day:'2-digit'}).formatToParts(new Date());\nconst d = Object.fromEntries(parts.map(p => [p.type, p.value]));\nconst today = `${d.year}-${d.month}-${d.day}`;\n\nconst as_of_date = /^\\d{4}-\\d{2}-\\d{2}$/.test(config.as_of_date) ? config.as_of_date : today;\n\nconst validSources = ['SAMPLE', 'LOCAL_DATASET', 'SMARTRETAIL'];\nif (!validSources.includes(config.data_source)) {\n  throw new Error(`data_source must be one of ${validSources.join(', ')}, got '${config.data_source}'`);\n}\nif (config.data_source === 'LOCAL_DATASET' && !/^https:\\/\\//.test(config.local_dataset_api_url)) {\n  throw new Error('Set local_dataset_api_url to your cloudflared tunnel URL before running LOCAL_DATASET mode');\n}\n\nreturn [{json: {\n  as_of_date,\n  store: config.store,\n  data_source: config.data_source,\n  expected_sku_count: config.expected_sku_count,\n  local_dataset_api_url: config.local_dataset_api_url,\n  mode: 'SAMPLE_TEST',\n  live_data_ready: false,\n  po_submission_allowed: false\n}}];"
+      },
+      "id": "po-context",
+      "name": "Run Configuration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;\nif(r.mode!=='SAMPLE_TEST' || r.po_submission_allowed!==false) throw new Error('This template only permits sample testing. Configure and validate live data and PO rules before enabling a live path.');\nreturn [{json:r}];"
+      },
+      "id": "po-gate",
+      "name": "Sample Data Safety Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-sample",
+              "leftValue": "={{ $json.data_source }}",
+              "rightValue": "SAMPLE",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "po-src-sample",
+      "name": "Data Source: SAMPLE?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-local-dataset",
+              "leftValue": "={{ $json.data_source }}",
+              "rightValue": "LOCAL_DATASET",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "po-src-local",
+      "name": "Data Source: LOCAL_DATASET?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// SMARTRETAIL is not implemented. API contracts, credentials, and field\n// mappings are not available yet (see model_testing/PO_PROJECT_WORKFLOW.md).\n// This branch intentionally fails closed instead of returning invented data.\nthrow new Error('data_source=SMARTRETAIL is a future placeholder only. Set Run Configuration.data_source to SAMPLE or LOCAL_DATASET.');"
+      },
+      "id": "po-smartretail-placeholder",
+      "name": "SmartRetail (Future Placeholder)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.local_dataset_api_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ as_of_date: $json.as_of_date }) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Local Dataset API Key"
+        }
+      },
+      "id": "po-local-input",
+      "name": "Local Dataset Input",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const resp = $input.first().json;\nconst runContext = $('Run Configuration').first().json;\nconst asOf = runContext.as_of_date;\n\nif (resp.error || !Array.isArray(resp.records)) {\n  return [{json: {\n    as_of_date: asOf, data_source: 'LOCAL_DATASET', source_files: [], sku_count: 0,\n    records: [], fetch_error: String(resp.error?.message || resp.error || 'Local dataset endpoint returned no records')\n  }}];\n}\n\n// Canonical schema shared with the future SmartRetail path. Fields the local\n// historical dataset cannot provide are preserved as null/UNKNOWN, never\n// invented, and listed per-record in missing_fields for the DQ layer.\nconst canonical = resp.records.map(r => {\n  const missing_fields = [];\n  const nullMissing = (name) => { missing_fields.push(name); return null; };\n\n  const daysSince = r.days_since_latest_record;\n  let source_freshness;\n  if (daysSince === null || daysSince === undefined) source_freshness = 'UNKNOWN';\n  else if (daysSince <= 1) source_freshness = 'FRESH';\n  else if (daysSince <= 7) source_freshness = 'RECENT';\n  else source_freshness = 'STALE';\n\n  let promotion_status;\n  if (r.promo_active === true) promotion_status = 'ACTIVE';\n  else if (r.promo_active === false) promotion_status = 'NONE';\n  else { nullMissing('promotion_status'); promotion_status = 'UNKNOWN'; }\n\n  return {\n    itemCode: r.itemCode ?? null,\n    product: nullMissing('product'),\n    department: r.departmentName ?? null,\n    trading_date: r.trading_date ?? null,\n    sales_quantity: r.quantity ?? null,\n    qoh: nullMissing('qoh'),\n    promotion_status,\n    promotion_type: r.promo_type_group ?? null,\n    discount: r.discount_pct ?? null,\n    promotion_dates: nullMissing('promotion_dates'),\n    supplier_id: r.primarySupplier ?? null,\n    moq: r.minOrderQty ?? null,\n    carton_quantity: r.cartonQty ?? null,\n    open_po_quantity: nullMissing('open_po_quantity'),\n    lead_time: nullMissing('lead_time'),\n    source_freshness,\n    missing_fields,\n    days_since_latest_record: daysSince ?? null\n  };\n});\n\nreturn [{json: {\n  as_of_date: asOf, data_source: 'LOCAL_DATASET', source_files: resp.source_files,\n  sku_count: canonical.length, records: canonical, fetch_error: null\n}}];"
+      },
+      "id": "po-local-normalize",
+      "name": "Data Normalization (Local Dataset)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first().json;\nconst runContext = $('Run Configuration').first().json;\n\nif (input.fetch_error) {\n  return [{json: {\n    as_of_date: input.as_of_date, data_source: input.data_source,\n    dq_summary: {total: 0, has_error: true, has_warning: false, has_unknown: false,\n      duplicate_skus: [], coverage_issues: [input.fetch_error]},\n    dq_records: []\n  }}];\n}\n\nconst records = input.records || [];\nconst expected = runContext.expected_sku_count;\nconst isFiniteNum = (v) => typeof v === 'number' && Number.isFinite(v);\n\nconst seen = new Set();\nconst dupes = new Set();\nconst results = [];\nlet hasError = false, hasWarning = false, hasUnknown = false;\n\nfor (const r of records) {\n  const issues = [];\n  let status = 'VALID';\n  const escalate = (level) => {\n    if (level === 'ERROR') status = 'ERROR';\n    else if (level === 'WARNING' && status !== 'ERROR') status = 'WARNING';\n    else if (level === 'UNKNOWN' && status === 'VALID') status = 'UNKNOWN';\n  };\n\n  if (!r.itemCode) { issues.push('Missing SKU'); escalate('ERROR'); }\n  if (r.itemCode) {\n    if (seen.has(r.itemCode)) { issues.push('Duplicate SKU record'); escalate('ERROR'); dupes.add(r.itemCode); }\n    seen.add(r.itemCode);\n  }\n\n  if (!r.trading_date || !/^\\d{4}-\\d{2}-\\d{2}$/.test(r.trading_date)) {\n    issues.push('Invalid or missing trading_date'); escalate('ERROR');\n  } else if (r.trading_date > runContext.as_of_date) {\n    issues.push('trading_date is after as_of_date (leakage)'); escalate('ERROR');\n  }\n\n  if (r.sales_quantity === null || r.sales_quantity === undefined) {\n    issues.push('Sales quantity UNKNOWN (no_row_returned != zero)'); escalate('UNKNOWN');\n  } else if (!isFiniteNum(r.sales_quantity) || r.sales_quantity < 0) {\n    issues.push('Invalid sales_quantity'); escalate('ERROR');\n  }\n\n  if (r.qoh === null || r.qoh === undefined) {\n    issues.push('QOH UNKNOWN (not present in local dataset)'); escalate('UNKNOWN');\n  } else if (!isFiniteNum(r.qoh) || r.qoh < 0) {\n    issues.push('Negative/invalid QOH'); escalate('WARNING');\n  }\n\n  if (r.promotion_status === 'UNKNOWN') { issues.push('Promotion status UNKNOWN'); escalate('UNKNOWN'); }\n  if (r.promotion_status === 'ACTIVE' && !(r.discount > 0)) {\n    issues.push('Active promotion without a positive discount value'); escalate('WARNING');\n  }\n  if (r.discount !== null && r.discount !== undefined && (!isFiniteNum(r.discount) || r.discount < 0 || r.discount > 1)) {\n    issues.push('Discount outside expected 0-1 range'); escalate('WARNING');\n  }\n\n  if (!r.supplier_id) { issues.push('Missing supplier_id'); escalate('WARNING'); }\n  if (r.moq === null || r.moq === undefined || r.moq <= 0) { issues.push('Missing/invalid MOQ'); escalate('WARNING'); }\n  if (r.carton_quantity === null || r.carton_quantity === undefined || r.carton_quantity <= 0) {\n    issues.push('Missing/invalid carton_quantity'); escalate('WARNING');\n  }\n  if (r.lead_time === null || r.lead_time === undefined) {\n    issues.push('Lead time UNKNOWN (not present in local dataset)'); escalate('UNKNOWN');\n  }\n  if (r.open_po_quantity === null || r.open_po_quantity === undefined) {\n    issues.push('Open PO quantity UNKNOWN (not present in local dataset)'); escalate('UNKNOWN');\n  }\n\n  if (r.source_freshness === 'STALE') {\n    issues.push(`Source data stale (${r.days_since_latest_record} days old)`); escalate('WARNING');\n  }\n  if (r.source_freshness === 'UNKNOWN') {\n    issues.push('Freshness UNKNOWN - no historical row at or before as_of_date'); escalate('UNKNOWN');\n  }\n\n  if (status === 'ERROR') hasError = true;\n  else if (status === 'WARNING') hasWarning = true;\n  else if (status === 'UNKNOWN') hasUnknown = true;\n\n  results.push({itemCode: r.itemCode, dq_status: status, dq_issues: issues, record: r});\n}\n\nconst coverageIssues = [];\nif (typeof expected === 'number' && records.length !== expected) {\n  coverageIssues.push(`Expected ${expected} SKUs, got ${records.length}`);\n}\n\nreturn [{json: {\n  as_of_date: input.as_of_date, data_source: input.data_source,\n  dq_summary: {\n    total: results.length, has_error: hasError,\n    has_warning: hasWarning || coverageIssues.length > 0, has_unknown: hasUnknown,\n    duplicate_skus: [...dupes], coverage_issues: coverageIssues\n  },\n  dq_records: results\n}}];"
+      },
+      "id": "po-local-dq",
+      "name": "Data Quality Validation (Local Dataset)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {},
+          "conditions": [
+            {
+              "id": "has-errors",
+              "leftValue": "={{ $json.dq_summary.has_error }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "po-local-dq-gate",
+      "name": "Data Quality Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r = $input.first().json;\nconst errors = [];\nfor (const rec of (r.dq_records || [])) {\n  if (rec.dq_status === 'ERROR') errors.push(`${rec.itemCode || 'UNKNOWN_SKU'}: ${rec.dq_issues.join('; ')}`);\n}\nif (r.dq_summary?.coverage_issues?.length) errors.push(...r.dq_summary.coverage_issues);\nreturn [{json: {status: 'failed', stage: 'data_quality', errors: errors.length ? errors : ['Data quality check failed'], run_id: null}}];"
+      },
+      "id": "po-local-dq-failure",
+      "name": "DQ Failure Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Prepare Model Input - builds a future-ready canonical payload from the\n// LOCAL_DATASET pipeline. The current Modal endpoint still only accepts\n// {as_of_date, token} and ignores everything else; this structure is carried\n// forward for when Modal is updated to accept real inputs, and is NOT sent in\n// today's request body.\nconst dq = $input.first().json;\nconst runContext = $('Run Configuration').first().json;\n\nconst prepared_local_dataset = {\n  as_of_date: runContext.as_of_date,\n  store: runContext.store,\n  data_source: runContext.data_source,\n  dq_summary: dq.dq_summary,\n  records: (dq.dq_records || []).map(x => x.record)\n};\n\nreturn [{json: {\n  as_of_date: runContext.as_of_date,\n  token: '10', // Required by current Modal; unrelated to LOCAL_DATASET readiness\n  prepared_local_dataset\n}}];"
+      },
+      "id": "po-sr-prep",
+      "name": "Prepare Model Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://tbdevanand--pearcedale-forecast-forecast.modal.run",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ as_of_date: $json.as_of_date, token: '10' }) }}",
+        "options": {
+          "timeout": 120000,
+          "fullResponse": true
+        }
+      },
+      "id": "po-call-current-modal",
+      "name": "Call Current Modal Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        0
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Response contract for the current Modal sample endpoint.\n// Replace this node only if a future model changes the response schema.\nconst incoming = $input.first().json;\nconst expectedDate = $('Run Configuration').first().json.as_of_date;\nif (incoming.error || incoming.statusCode >= 400) {\n  return [{json: {status: 'failed', stage: 'modal_http',\n    errors: [String(incoming.error?.message || incoming.error || `HTTP ${incoming.statusCode}`)]}}];\n}\nconst r = typeof incoming.body === 'string' ? JSON.parse(incoming.body) : (incoming.body || incoming);\nif (r?.status === 'error') {\n  return [{json: {status: 'failed', stage: 'modal_model', errors: [r.error || 'Model error'], run_id: r.run_id || null}}];\n}\nconst errors = [];\nconst check = (condition, message) => { if (!condition) errors.push(message); };\nconst isQty = x => typeof x === 'number' && Number.isFinite(x) && x >= 0;\nconst f = Array.isArray(r?.forecasts) ? r.forecasts : [];\nconst p = Array.isArray(r?.recommendations) ? r.recommendations : [];\nconst summary = r?.summary || {};\ncheck(r?.status === 'passed' && r?.test_type === 'pipeline_smoke_test', 'Unexpected response type');\ncheck(typeof r?.run_id === 'string' && /^[a-f0-9]{32}$/.test(r.run_id), 'Invalid run ID');\ncheck(r?.inventory_is_simulated === true, 'Expected simulated inventory in sample test');\ncheck(summary.run_date === expectedDate, 'As-of date does not match request');\nconst base = new Date(`${expectedDate}T00:00:00Z`);\nconst start = new Date(base.getTime() + 86400000).toISOString().slice(0, 10);\nconst end = new Date(base.getTime() + 15 * 86400000).toISOString().slice(0, 10);\ncheck(summary.horizon?.start === start && summary.horizon?.end === end, 'Incorrect 15-day horizon');\ncheck(f.length > 0 && f.length === summary.total_skus, 'Missing or inconsistent forecasts');\nconst forecastIds = new Set(f.map(x => x?.itemCode));\ncheck(forecastIds.size === f.length, 'Duplicate forecast SKU');\nfor (const row of f) {\n  check(typeof row?.itemCode === 'string' && row.itemCode.length > 0, 'Missing SKU');\n  check(isQty(row?.baseline_forecast_15d) && isQty(row?.hybrid_forecast_15d), 'Invalid forecast demand');\n  check(row?.as_of_date === expectedDate && row?.horizon_start === start && row?.horizon_end === end,\n    'Incorrect row dates');\n}\ncheck(p.length === f.length, 'PO preview coverage does not match forecasts');\nconst recommendationIds = new Set(p.map(x => x?.itemCode));\ncheck(recommendationIds.size === p.length && [...recommendationIds].every(x => forecastIds.has(x)),\n  'Duplicate or unexpected PO preview SKU');\nfor (const row of p) {\n  check(Number.isInteger(row?.recommended_order_qty) && row.recommended_order_qty >= 0,\n    'Invalid PO preview quantity');\n}\nif (errors.length) return [{json: {status: 'failed', stage: 'validation',\n  errors: [...new Set(errors)], run_id: r?.run_id || null}}];\nreturn [{json: {\n  status: 'passed', mode: 'SAMPLE_TEST', run_id: r.run_id,\n  as_of_date: expectedDate, horizon: summary.horizon, total_skus: f.length,\n  total_forecast_qty: f.reduce((sum, row) => sum + row.hybrid_forecast_15d, 0),\n  simulated_inventory: true, po_submission_allowed: false,\n  po_preview_decisions: summary.po_decisions,\n  sample_forecasts: f.slice(0, 5), sample_po_preview: p.slice(0, 5),\n  warnings: r.warnings || []\n}}];\n"
+      },
+      "id": "po-validate",
+      "name": "Validate Modal Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-passed",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "passed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "po-passed",
+      "name": "Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;\nreturn [{json:{...r, message:`Sample forecast passed: ${r.total_skus} SKUs for ${r.as_of_date}. PO figures use simulated inventory. No orders were placed.`}}];"
+      },
+      "id": "po-success",
+      "name": "Sample Success Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const r=$input.first().json;\nreturn [{json:{...r, message:`Sample forecast failed at ${r.stage||'unknown'}: ${(r.errors||['Unknown error']).join('; ')}. Inspect this execution before retrying.`}}];"
+      },
+      "id": "po-failure",
+      "name": "Sample Failure Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1–3. Data foundation (separate n8n sub-workflows)\nSmartRetail APIs → raw capture → pagination/consolidation → DQ → PostgreSQL.\nPreserve `no_row_returned` as unknown; flag negative QOH.\nConnect only after API and table contracts are known.",
+        "height": 250,
+        "width": 430
+      },
+      "id": "Architecture 1 - Ingest DQ DB",
+      "name": "Architecture 1 - Ingest DQ DB",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -180,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4–5. Model development (Python)\nPrepare historical data, analyze stockouts, engineer past-known features, chronological splits, compare models, deploy an approved version. Training does not run on each daily forecast.",
+        "height": 240,
+        "width": 390
+      },
+      "id": "Architecture 2 - Train",
+      "name": "Architecture 2 - Train",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        300,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 6–9. Forecast and PO\nCurrent connected path calls the deployed Modal sample model and checks its output. It previews POs using simulated inventory.\nFuture: real inventory position → deterministic PO engine → audited PostgreSQL records → buyer approval. No automatic supplier submission.",
+        "height": 280,
+        "width": 450
+      },
+      "id": "Architecture 3 - Forecast PO",
+      "name": "Architecture 3 - Forecast PO",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        770,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 10–11. Website and AI (separate service)\nBackend API reads stored results for dashboard and product pages. Chat retrieves current numeric facts from the API/database; RAG provides documentation context. The LLM only explains saved PO decisions.",
+        "height": 250,
+        "width": 420
+      },
+      "id": "Architecture 4 - Website AI",
+      "name": "Architecture 4 - Website AI",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## LOCAL_DATASET phase (current)\nSmartRetail API details are not available yet. This branch reads the project's real historical dataset (pearcedale-lgbm-model/processed_output/clean_daily_sales.parquet + promotions_daily.parquet) through a small local HTTP bridge (model_testing/api.py, POST /local-dataset), exposed via the same cloudflared tunnel pattern already used for the Modal test bridge - n8n itself runs remotely (n8n.srv1691210.hstgr.cloud) and cannot read your local filesystem directly.\n\nSet Run Configuration.local_dataset_api_url to the tunnel URL, and create an n8n Header Auth credential named 'Local Dataset API Key' matching your MODEL_TEST_API_KEY. Fields the historical dataset cannot provide (qoh, open_po_quantity, lead_time, product name, promotion date ranges) are preserved as null/UNKNOWN per record, never fabricated, and listed in each record's missing_fields.",
+        "height": 340,
+        "width": 480
+      },
+      "id": "Architecture 5 - Local Dataset Phase",
+      "name": "Architecture 5 - Local Dataset Phase",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        560,
+        620
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Configuration": {
+      "main": [
+        [
+          {
+            "node": "Sample Data Safety Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample Data Safety Gate": {
+      "main": [
+        [
+          {
+            "node": "Data Source: SAMPLE?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Source: SAMPLE?": {
+      "main": [
+        [
+          {
+            "node": "Call Current Modal Model",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Data Source: LOCAL_DATASET?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Source: LOCAL_DATASET?": {
+      "main": [
+        [
+          {
+            "node": "Local Dataset Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SmartRetail (Future Placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Local Dataset Input": {
+      "main": [
+        [
+          {
+            "node": "Data Normalization (Local Dataset)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Data Normalization (Local Dataset)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Normalization (Local Dataset)": {
+      "main": [
+        [
+          {
+            "node": "Data Quality Validation (Local Dataset)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Quality Validation (Local Dataset)": {
+      "main": [
+        [
+          {
+            "node": "Data Quality Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Quality Gate": {
+      "main": [
+        [
+          {
+            "node": "Prepare Model Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "DQ Failure Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DQ Failure Report": {
+      "main": [
+        [
+          {
+            "node": "Sample Failure Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Model Input": {
+      "main": [
+        [
+          {
+            "node": "Call Current Modal Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Current Modal Model": {
+      "main": [
+        [
+          {
+            "node": "Validate Modal Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Modal Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Modal Output": {
+      "main": [
+        [
+          {
+            "node": "Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Passed?": {
+      "main": [
+        [
+          {
+            "node": "Sample Success Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sample Failure Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Australia/Melbourne"
+  },
+  "active": false,
+  "pinData": {}
+}

@@ -14,6 +14,9 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent
 MODEL = ROOT.parent / 'pearcedale-lgbm-model' / 'model'
+PROCESSED = ROOT.parent / 'pearcedale-lgbm-model' / 'processed_output'
+CLEAN_SALES = PROCESSED / 'clean_daily_sales.parquet'
+PROMO_DAILY = PROCESSED / 'promotions_daily.parquet'
 LOCK = threading.Lock()
 TOKEN = os.environ.get('MODEL_TEST_API_KEY', '')
 
@@ -78,6 +81,48 @@ def run_sample(as_of):
     }
 
 
+def local_dataset_snapshot(as_of):
+    """Read-only snapshot from this project's own historical dataset, standing in for a
+    live SmartRetail feed until that API exists. Never writes to the source parquet files.
+    For each SKU, returns the latest recorded row at or before `as_of` (no future leakage)."""
+    import polars as pl
+
+    if not CLEAN_SALES.exists() or not PROMO_DAILY.exists():
+        raise RuntimeError('Local dataset files not found under pearcedale-lgbm-model/processed_output/')
+
+    cutoff = as_of.isoformat()
+    sales = (
+        pl.read_parquet(CLEAN_SALES)
+        .filter(pl.col('trading_date') <= cutoff)
+        .sort('trading_date', descending=True)
+        .unique(subset=['itemCode'], keep='first')
+    )
+    promo = (
+        pl.read_parquet(PROMO_DAILY)
+        .with_columns(pl.col('trading_date').dt.strftime('%Y-%m-%d').alias('trading_date'))
+        .filter(pl.col('trading_date') <= cutoff)
+        .sort('trading_date', descending=True)
+        .unique(subset=['itemCode'], keep='first')
+        .rename({'trading_date': 'promo_trading_date'})
+    )
+    records = sales.join(promo, on='itemCode', how='left').to_dicts()
+    for row in records:
+        latest = row.get('trading_date')
+        row['days_since_latest_record'] = (as_of - date.fromisoformat(latest)).days if latest else None
+        for key, value in list(row.items()):
+            if hasattr(value, 'isoformat'):
+                row[key] = value.isoformat()
+    return {
+        'as_of_date': cutoff,
+        'source_files': [
+            'pearcedale-lgbm-model/processed_output/clean_daily_sales.parquet',
+            'pearcedale-lgbm-model/processed_output/promotions_daily.parquet',
+        ],
+        'sku_count': len(records),
+        'records': records,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
@@ -93,6 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        if self.path == '/local-dataset':
+            return self.handle_local_dataset()
         if self.path != '/test-forecast':
             return self.respond(404, {'error': 'Not found'})
         supplied = self.headers.get('X-API-Key', '')
@@ -125,6 +172,30 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             LOCK.release()
 
+    def handle_local_dataset(self):
+        supplied = self.headers.get('X-API-Key', '')
+        if not TOKEN or not hmac.compare_digest(supplied.encode(), TOKEN.encode()):
+            return self.respond(401, {'error': 'Invalid API key'})
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 1024:
+                raise ValueError('Expected a small JSON request')
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict) or set(data) != {'as_of_date'}:
+                raise ValueError('Provide only as_of_date as YYYY-MM-DD')
+            raw_date = data['as_of_date']
+            as_of = date.fromisoformat(raw_date)
+            if as_of.isoformat() != raw_date:
+                raise ValueError('Use YYYY-MM-DD')
+        except (ValueError, TypeError, OverflowError):
+            return self.respond(400, {'error': 'Provide {"as_of_date":"YYYY-MM-DD"}'})
+        try:
+            result = local_dataset_snapshot(as_of)
+        except Exception as exc:
+            print(f'Local dataset export failed: {exc}', file=sys.stderr)
+            return self.respond(500, {'error': 'Local dataset export failed; inspect the API terminal'})
+        return self.respond(200, result)
+
 
 if __name__ == '__main__':
     if len(TOKEN) < 32:
@@ -133,4 +204,5 @@ if __name__ == '__main__':
     class LocalServer(ThreadingHTTPServer):
         allow_reuse_address = False
     print(f'Sample-test API: http://127.0.0.1:{port}/test-forecast', flush=True)
+    print(f'Local dataset snapshot: http://127.0.0.1:{port}/local-dataset', flush=True)
     LocalServer(('127.0.0.1', port), Handler).serve_forever()

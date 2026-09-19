@@ -1,0 +1,79 @@
+{
+  "name": "Pearcedale PO - Optional Test Storage V2",
+  "nodes": [
+    {
+      "id": "receive-test-run",
+      "name": "Receive Test Run",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
+      "id": "check-storage-input",
+      "name": "Check Storage Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const d=$input.first().json; if(d.schema_version!=='po-test.v2'||d.status!=='passed'||d.inventory_is_simulated!==true||d.submission_allowed!==false||!Array.isArray(d.forecasts)||!Array.isArray(d.recommendations)||!/^[a-f0-9]{32}$/.test(d.run_id)) throw new Error('Invalid test storage input'); return [{json:d}];"
+      }
+    },
+    {
+      "id": "store-run-in-postgresql",
+      "name": "Store Run in PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO po_testing.runs AS stored (run_id, payload)\nVALUES (($1::jsonb)->>'run_id', $1::jsonb)\nON CONFLICT (run_id) DO UPDATE SET payload = stored.payload\nRETURNING run_id,\n  CASE WHEN payload = $1::jsonb THEN 'stored' ELSE 'conflict' END AS storage_status;\n",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($json)] }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Receive Test Run": {
+      "main": [
+        [
+          {
+            "node": "Check Storage Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Storage Input": {
+      "main": [
+        [
+          {
+            "node": "Store Run in PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Australia/Melbourne"
+  },
+  "pinData": {}
+}
