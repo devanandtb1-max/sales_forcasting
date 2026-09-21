@@ -75,7 +75,7 @@ _REQUIRED_SALES_FIELDS = {
 }
 _REQUIRED_PROMO_FIELDS = {
     "itemCode", "trading_date", "regular_price", "promo_active", "promo_price",
-    "discount_pct", "promo_type_group", "n_stacked_promos",
+    "discount_pct", "promo_type_group", "n_stacked_promos", "promo_status",
 }
 
 

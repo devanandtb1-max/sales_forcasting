@@ -84,60 +84,94 @@ def run_sample(as_of):
 HISTORY_LOOKBACK_DAYS = 400  # >52 weeks, enough for the model's lag_52/roll_*_13 features
 
 
-def local_dataset_snapshot(as_of):
-    """Read-only daily history from this project's own historical dataset, standing in
-    for a live SmartRetail feed until that API exists. Never writes to the source
-    parquet files. Returns every daily row at or before `as_of` (no future leakage),
-    going back HISTORY_LOOKBACK_DAYS - the forecasting model needs a real daily time
-    series (lag_1..lag_52, rolling means/stds) per SKU, not a single latest snapshot."""
-    import polars as pl
+def local_dataset_snapshot(as_of, sku_codes=None):
+    """Read-only daily history from Supabase."""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    from dotenv import load_dotenv
 
-    if not CLEAN_SALES.exists() or not PROMO_DAILY.exists():
-        raise RuntimeError('Local dataset files not found under pearcedale-lgbm-model/processed_output/')
+    load_dotenv()
+    db_url = os.environ.get('DATABASE_URL_POOL')
+    if not db_url:
+        raise RuntimeError('DATABASE_URL_POOL missing from environment')
 
     cutoff = as_of.isoformat()
     window_start = (as_of - timedelta(days=HISTORY_LOOKBACK_DAYS)).isoformat()
     # Sales must never look past as_of (unknowable in advance - no leakage).
     # Promotions ARE known in advance (scheduled), so the model needs them for
-    # the forecast horizon too - same "future-extended" treatment as the
-    # bundled promotions_daily.parquet (see ingest_promotions.py).
+    # the forecast horizon too.
     horizon_end = (as_of + timedelta(days=15)).isoformat()
 
-    sales = (
-        pl.read_parquet(CLEAN_SALES)
-        .filter((pl.col('trading_date') <= cutoff) & (pl.col('trading_date') >= window_start))
-        .sort(['itemCode', 'trading_date'])
-    )
-    promo = (
-        pl.read_parquet(PROMO_DAILY)
-        .with_columns(pl.col('trading_date').dt.strftime('%Y-%m-%d').alias('trading_date'))
-        .filter((pl.col('trading_date') <= horizon_end) & (pl.col('trading_date') >= window_start))
-        .sort(['itemCode', 'trading_date'])
-    )
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Sales
+            sales_query = """
+                SELECT item_code AS "itemCode",
+                       TO_CHAR(trading_date, 'YYYY-MM-DD') AS trading_date,
+                       quantity, returns_qty, asp, unit_margin, uom_class, tier,
+                       department_name AS "departmentName",
+                       commodity_name AS "commodityName",
+                       primary_supplier AS "primarySupplier",
+                       carton_qty AS "cartonQty",
+                       min_order_qty AS "minOrderQty"
+                FROM po_system.sales_history
+                WHERE trading_date >= %s AND trading_date <= %s
+            """
+            params = [window_start, cutoff]
+            if sku_codes:
+                sales_query += " AND item_code = ANY(%s)"
+                params.append(sku_codes)
+            sales_query += " ORDER BY item_code, trading_date"
+            cur.execute(sales_query, params)
+            sales_rows = cur.fetchall()
 
-    def to_records(df):
-        rows = df.to_dicts()
-        for row in rows:
-            for key, value in list(row.items()):
-                if hasattr(value, 'isoformat'):
-                    row[key] = value.isoformat()
-        return rows
+            # Promotions
+            promo_query = """
+                SELECT item_code AS "itemCode",
+                       TO_CHAR(trading_date, 'YYYY-MM-DD') AS trading_date,
+                       regular_price, promo_active, promo_price, discount_pct,
+                       promo_type_group, n_stacked_promos, promo_status
+                FROM po_system.promotions
+                WHERE trading_date >= %s AND trading_date <= %s
+            """
+            params = [window_start, horizon_end]
+            if sku_codes:
+                promo_query += " AND item_code = ANY(%s)"
+                params.append(sku_codes)
+            promo_query += " ORDER BY item_code, trading_date"
+            cur.execute(promo_query, params)
+            promo_rows = cur.fetchall()
 
-    sales_rows = to_records(sales)
-    promo_rows = to_records(promo)
-    return {
-        'as_of_date': cutoff,
-        'window_start': window_start,
-        'source_files': [
-            'pearcedale-lgbm-model/processed_output/clean_daily_sales.parquet',
-            'pearcedale-lgbm-model/processed_output/promotions_daily.parquet',
-        ],
-        'sku_count': sales.select('itemCode').n_unique(),
-        'sales_row_count': len(sales_rows),
-        'promotion_row_count': len(promo_rows),
-        'sales': sales_rows,
-        'promotions': promo_rows,
-    }
+            def clean_row(r):
+                d = dict(r)
+                for k, v in d.items():
+                    if v is not None and type(v).__name__ == 'Decimal':
+                        d[k] = float(v)
+                return d
+            
+            sales_rows = [clean_row(r) for r in sales_rows]
+            promo_rows = [clean_row(r) for r in promo_rows]
+
+            # Calculate sku_count
+            sku_set = set(row['itemCode'] for row in sales_rows)
+            sku_count = len(sku_set)
+
+            return {
+                'as_of_date': cutoff,
+                'window_start': window_start,
+                'source_files': [
+                    'po_system.sales_history',
+                    'po_system.promotions',
+                ],
+                'sku_count': sku_count,
+                'sales_row_count': len(sales_rows),
+                'promotion_row_count': len(promo_rows),
+                'sales': sales_rows,
+                'promotions': promo_rows,
+            }
+    finally:
+        conn.close()
 
 
 class Handler(BaseHTTPRequestHandler):

@@ -1,3 +1,6 @@
 DEPLOYMENT_SECRETS_AND_CONTEXT.md
 __pycache__/
 *.pyc
+
+.env
+test_api_out.json
